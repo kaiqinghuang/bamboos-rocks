@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-单张 SCP 拉取云端 ComfyUI 输出目录，按每 9 张自动分文件夹到 bamboos-photos/000–999+/
-依赖：sshpass
+轮询拉取云端 ComfyUI 输出目录到本地 rock1/，保持远端文件名。
+- 下载先写 .tmp 再原子改名，播放器永远读不到写了一半的文件
+- 启动时以本地已有文件为基准，不重复下载
+- SSH 连接复用（ControlMaster），降低轮询握手开销
 启动：python3 sync_remote.py
 """
 
@@ -14,21 +16,25 @@ REMOTE_HOST = "l4funr0touq0eofh.ssh.x-gpu.com"
 REMOTE_PORT = "44794"
 REMOTE_USER = "root"
 REMOTE_PASS = "o4iK9tM4b7ADpUnxwA1vlfVlubP5bbwW"
-REMOTE_DIR = "/root/ComfyUI/output/8.7/bamboo2"
+REMOTE_DIR = "/root/ComfyUI/output/8.7/rock1"
 
-LOCAL_BASE = Path(__file__).parent / "bamboos-photos"
-IMAGES_PER_FOLDER = 9
-POLL_INTERVAL = 1
+LOCAL_DIR = Path(__file__).parent / "rock1"
+POLL_INTERVAL = 1.0
+EXT_RE = re.compile(r"\.(png|jpg|jpeg|webp)$", re.I)
 
-processed_files: set[str] = set()
+SSH_OPTS = [
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+    "-o", "ControlMaster=auto",
+    "-o", "ControlPath=/tmp/rock-sync-%r@%h:%p",
+    "-o", "ControlPersist=60",
+]
 
 
 def run_ssh(cmd: str) -> str:
     full_cmd = [
         "sshpass", "-p", REMOTE_PASS,
-        "ssh", "-p", REMOTE_PORT,
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
+        "ssh", "-p", REMOTE_PORT, *SSH_OPTS,
         f"{REMOTE_USER}@{REMOTE_HOST}",
         cmd,
     ]
@@ -38,66 +44,50 @@ def run_ssh(cmd: str) -> str:
 
 def list_remote_images() -> list[str]:
     output = run_ssh(f"ls -1 {REMOTE_DIR} 2>/dev/null || true")
-    files = [
-        f.strip() for f in output.splitlines()
-        if re.search(r"\.(png|jpg|jpeg|webp)$", f.strip(), re.I)
-    ]
-    return sorted(files)
+    return sorted(f.strip() for f in output.splitlines() if EXT_RE.search(f.strip()))
 
 
-def pull_file(remote_name: str, local_path: Path) -> bool:
-    local_path.parent.mkdir(parents=True, exist_ok=True)
+def pull_file(remote_name: str) -> bool:
+    final_path = LOCAL_DIR / remote_name
+    tmp_path = final_path.with_name(final_path.name + ".tmp")
     remote_path = f"{REMOTE_USER}@{REMOTE_HOST}:{REMOTE_DIR}/{remote_name}"
 
     cmd = [
         "sshpass", "-p", REMOTE_PASS,
-        "scp", "-P", REMOTE_PORT,
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
+        "scp", "-P", REMOTE_PORT, *SSH_OPTS,
         remote_path,
-        str(local_path),
+        str(tmp_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"[scp error] {remote_name}: {result.stderr.strip()}")
-    return result.returncode == 0
+        tmp_path.unlink(missing_ok=True)
+        return False
 
-
-def get_next_save_path() -> Path:
-    """找到下一个该写入的本地路径。"""
-    folder_index = 0
-    while True:
-        folder = LOCAL_BASE / f"{folder_index:03d}"
-        folder.mkdir(parents=True, exist_ok=True)
-        count = len(list(folder.glob("*")))
-        if count < IMAGES_PER_FOLDER:
-            return folder / f"{count + 1:02d}.png"
-        folder_index += 1
+    tmp_path.rename(final_path)
+    return True
 
 
 def main() -> None:
-    LOCAL_BASE.mkdir(parents=True, exist_ok=True)
+    LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    done = {p.name for p in LOCAL_DIR.iterdir() if EXT_RE.search(p.name)}
+    if done:
+        print(f"本地已有 {len(done)} 张，跳过重复下载")
 
     print(f"监控远程: {REMOTE_USER}@{REMOTE_HOST}:{REMOTE_DIR}")
-    print(f"本地存储: {LOCAL_BASE}")
+    print(f"本地存储: {LOCAL_DIR}")
     print("按 Ctrl+C 退出\n")
 
     try:
         while True:
-            remote_files = list_remote_images()
-            new_files = [f for f in remote_files if f not in processed_files]
-
-            for name in new_files:
-                local_path = get_next_save_path()
-                print(f"[pull] {name} -> {local_path.parent.name}/{local_path.name}")
-
-                if pull_file(name, local_path):
-                    processed_files.add(name)
+            new_names = [n for n in list_remote_images() if n not in done]
+            for name in new_names:
+                print(f"[pull] {name}")
+                if pull_file(name):
+                    done.add(name)
                 else:
                     print(f"[retry later] {name}")
-
             time.sleep(POLL_INTERVAL)
-
     except KeyboardInterrupt:
         print("\n退出同步")
 
