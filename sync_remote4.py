@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-轮询拉取云端 ComfyUI 输出目录到本地 rock1/，保持远端文件名。
+轮询拉取云端 ComfyUI 输出目录到本地 rock4/，保持远端文件名。
 - 下载先写 .tmp 再原子改名，播放器永远读不到写了一半的文件
 - 启动时以本地已有文件为基准，不重复下载
 - SSH 连接复用（ControlMaster），降低轮询握手开销
-启动：python3 sync_remote.py
+启动：python3 sync_remote4.py
 """
 
 import re
@@ -16,9 +16,9 @@ REMOTE_HOST = "l4funr0touq0eofh.ssh.x-gpu.com"
 REMOTE_PORT = "44794"
 REMOTE_USER = "root"
 REMOTE_PASS = "o4iK9tM4b7ADpUnxwA1vlfVlubP5bbwW"
-REMOTE_DIR = "/root/ComfyUI/output/8.7/rock1"
+REMOTE_DIR = "/root/ComfyUI/output/8.7/rock4"
 
-LOCAL_DIR = Path(__file__).parent / "rock1"
+LOCAL_DIR = Path(__file__).parent / "rock4"
 POLL_INTERVAL = 1.0
 EXT_RE = re.compile(r"\.(png|jpg|jpeg|webp)$", re.I)
 
@@ -26,7 +26,7 @@ SSH_OPTS = [
     "-o", "StrictHostKeyChecking=no",
     "-o", "UserKnownHostsFile=/dev/null",
     "-o", "ControlMaster=auto",
-    "-o", "ControlPath=/tmp/rock-sync-%r@%h:%p",
+    "-o", "ControlPath=/tmp/rock-sync-rock4-%r@%h:%p",
     "-o", "ControlPersist=60",
 ]
 
